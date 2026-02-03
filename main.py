@@ -77,6 +77,7 @@ async def health_check():
 @app.get("/fund/single")
 @limiter.limit("20/minute")
 async def get_single_fund(
+    request: Request,
     fund_code: str = Query(..., regex=r"^\d{6}$"),
     _: bool = Depends(verify_api_key)
 ):
@@ -123,7 +124,9 @@ async def get_single_fund(
 
 @app.get("/fund/market-flow")
 @limiter.limit("10/minute")
-async def get_market_flow(_: bool = Depends(verify_api_key)):
+async def get_market_flow(
+    request: Request, 
+    _: bool = Depends(verify_api_key)):
     """获取市场资金流（行业 & 概念板块）"""
     try:
         def fetch_flow():
@@ -142,3 +145,4 @@ async def get_market_flow(_: bool = Depends(verify_api_key)):
         raise
     except Exception as e:
         return JSONResponse(status_code=500, content={"code": 500, "error": "Market flow fetch failed"})
+
