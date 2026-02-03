@@ -1,6 +1,7 @@
 fastapi==0.115.0
 uvicorn==0.32.0
-akshare==1.16.28
+akshare==1.16.27
 pandas==2.2.2
 slowapi==0.1.7          # 限流
+
 python-multipart==0.0.9
