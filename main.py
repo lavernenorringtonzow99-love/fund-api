@@ -10,134 +10,135 @@ from datetime import datetime, timedelta
 import logging
 import os
 import time
-from functools import wraps
 
-# ================== 配置 ==================
-# 从环境变量读取 API Key（部署时设置）
-EXPECTED_API_KEY = os.getenv(FUND_API_KEY, your-secret-key-here)
+# Configuration
+EXPECTED_API_KEY = os.getenv("FUND_API_KEY", "")
 
-# 初始化
-app = FastAPI(title=基金数据 API, version=2.0)
+# Initialize FastAPI app
+app = FastAPI(title="Fund Data API")
+
+# Rate limiter setup
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# CORS（允许 DifyCoze 调用）
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[],
-    allow_methods=[],
-    allow_headers=[],
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# 日志
+# Logging setup
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(fund-api)
+logger = logging.getLogger("fund-api")
 
-# ================== 工具函数 ==================
-def get_prev_trading_date()
+
+def get_prev_trading_date():
+    """获取最近一个交易日（排除周末）"""
     today = datetime.now()
-    for i in range(1, 10)
+    for i in range(1, 10):
         d = today - timedelta(days=i)
-        if d.weekday()  5
-            return d.strftime(%Y-%m-%d)
-    return (today - timedelta(days=1)).strftime(%Y-%m-%d)
+        if d.weekday() < 5:  # Monday=0, Sunday=6
+            return d.strftime("%Y-%m-%d")
+    return (today - timedelta(days=1)).strftime("%Y-%m-%d")
 
-def safe_akshare_call(func, max_retries=2, timeout=10)
-    安全调用 AKShare，带重试和超时
-    for attempt in range(max_retries + 1)
-        try
-            start = time.time()
-            result = func()
-            duration = time.time() - start
-            logger.info(fAKShare call success in {duration.2f}s)
-            return result
-        except Exception as e
-            logger.warning(fAKShare attempt {attempt+1} failed {str(e)})
-            if attempt == max_retries
-                raise HTTPException(status_code=503, detail=数据源暂时不可用，请稍后重试)
-            time.sleep(1)  # 等待后重试
 
-# ================== 认证依赖 ==================
-def verify_api_key(request Request)
-    key = request.headers.get(X-API-Key) or request.query_params.get(api_key)
-    if not EXPECTED_API_KEY or key == EXPECTED_API_KEY
+def safe_akshare_call(func, max_retries=2):
+    """
+    安全调用 AKShare 接口，支持重试机制。
+    防止因网络波动或反爬导致的临时失败。
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            return func()
+        except Exception as e:
+            logger.warning(f"AKShare attempt {attempt+1} failed: {str(e)}")
+            if attempt == max_retries:
+                raise HTTPException(status_code=503, detail="数据源暂时不可用")
+            time.sleep(1)
+
+
+def verify_api_key(request: Request):
+    """验证 API Key（支持 header 或 query 参数）"""
+    key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+    if not EXPECTED_API_KEY or key == EXPECTED_API_KEY:
         return True
-    raise HTTPException(status_code=403, detail=无效的 API Key)
+    raise HTTPException(status_code=403, detail="Invalid API Key")
 
-# ================== API 路由 ==================
 
-@app.get(health)
-async def health_check()
-    return {status ok, timestamp datetime.now().isoformat()}
+@app.get("/health")
+async def health_check():
+    """健康检查接口"""
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}
 
-@app.get(fundsingle)
-@limiter.limit(20minute)  # 每分钟最多20次
+
+@app.get("/fund/single")
+@limiter.limit("20/minute")
 async def get_single_fund(
-    fund_code str = Query(..., regex=r^d{6}$, description=6位基金代码),
-    _ bool = Depends(verify_api_key)
-)
-    获取单一基金前一交易日数据（带认证+限流）
-    try
+    fund_code: str = Query(..., regex=r"^\d{6}$"),
+    _: bool = Depends(verify_api_key)
+):
+    """获取单只基金的最新净值和收益率"""
+    try:
         target_date = get_prev_trading_date()
         
-        def fetch_data()
-            nav_df = ak.fund_em_open_fund_info(fund=fund_code, indicator=单位净值走势)
-            if nav_df.empty
-                raise ValueError(无净值数据)
+        def fetch_data():
+            # 获取单位净值走势
+            nav_df = ak.fund_em_open_fund_info(fund=fund_code, indicator="单位净值走势")
+            if nav_df.empty:
+                raise ValueError("No NAV data found")
             
+            # 转换日期并筛选目标日期
             nav_df['净值日期'] = pd.to_datetime(nav_df['净值日期'])
             target_row = nav_df[nav_df['净值日期'].dt.strftime('%Y-%m-%d') == target_date]
+            if target_row.empty:
+                target_row = nav_df.iloc[-1:]  # 降级到最新一条
             
-            if target_row.empty
-                target_row = nav_df.iloc[-1]  # 降级到最新
-            
+            # 获取基金名称
             name_df = ak.fund_name_em()
-            fund_name = name_df[name_df['基金代码'] == fund_code]['基金简称'].iloc[0] if not name_df.empty else 未知
+            fund_name = "Unknown"
+            if not name_df.empty and fund_code in name_df['基金代码'].values:
+                fund_name = name_df[name_df['基金代码'] == fund_code]['基金简称'].iloc[0]
             
             return {
-                fund_code fund_code,
-                fund_name fund_name,
-                query_date target_date,
-                unit_nav float(target_row['单位净值'].iloc[0]),
-                daily_return_pct float(target_row['日增长率'].iloc[0]) if not pd.isna(target_row['日增长率'].iloc[0]) else None,
-                accumulative_nav float(target_row['累计净值'].iloc[0])
+                "fund_code": fund_code,
+                "fund_name": fund_name,
+                "query_date": target_date,
+                "unit_nav": float(target_row['单位净值'].iloc[0]),
+                "daily_return_pct": float(target_row['日增长率'].iloc[0]) if not pd.isna(target_row['日增长率'].iloc[0]) else None,
+                "accumulative_nav": float(target_row['累计净值'].iloc[0])
             }
         
         data = safe_akshare_call(fetch_data)
-        return JSONResponse(content={code 200, data data})
+        return JSONResponse(content={"code": 200, "data": data})
     
-    except HTTPException
+    except HTTPException:
         raise
-    except Exception as e
-        logger.error(fFund {fund_code} error {str(e)})
-        return JSONResponse(
-            status_code=500,
-            content={code 500, error 数据处理异常，请检查基金代码}
-        )
+    except Exception as e:
+        logger.error(f"Fund {fund_code} error: {str(e)}")
+        return JSONResponse(status_code=500, content={"code": 500, "error": "Data processing error"})
 
-@app.get(fundmarket-flow)
-@limiter.limit(10minute)
-async def get_market_flow(_ bool = Depends(verify_api_key))
-    市场资金流向（行业+概念）
-    try
-        def fetch_flow()
-            sector = ak.stock_sector_fund_flow_rank(indicator=今日)
-            concept = ak.stock_fund_flow_concept(symbol=即时)
-            
+
+@app.get("/fund/market-flow")
+@limiter.limit("10/minute")
+async def get_market_flow(_: bool = Depends(verify_api_key)):
+    """获取市场资金流（行业 & 概念板块）"""
+    try:
+        def fetch_flow():
+            sector = ak.stock_sector_fund_flow_rank(indicator="今日")
+            concept = ak.stock_fund_flow_concept(symbol="即时")
             return {
-                date datetime.now().strftime(%Y-%m-%d),
-                top_industries sector.nlargest(5, '净流入')[['行业', '净流入']].to_dict('records'),
-                top_concepts concept.nlargest(5, '净流入')[['概念名称', '净流入']].to_dict('records')
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "top_industries": sector.nlargest(5, '净流入')[['行业', '净流入']].to_dict('records'),
+                "top_concepts": concept.nlargest(5, '净流入')[['概念名称', '净流入']].to_dict('records')
             }
         
         data = safe_akshare_call(fetch_flow)
-        return JSONResponse(content={code 200, data data})
+        return JSONResponse(content={"code": 200, "data": data})
     
-    except HTTPException
+    except HTTPException:
         raise
-    except Exception as e
-        return JSONResponse(
-            status_code=500,
-            content={code 500, error 市场资金流获取失败}
-        )
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"code": 500, "error": "Market flow fetch failed"})
