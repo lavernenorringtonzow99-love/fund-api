@@ -7,7 +7,7 @@ import akshare as ak
 
 app = FastAPI(
     title="金融数据服务",
-    description="基金净值 + 市场资金流向（Railway 免费版优化）",
+    description="基金净值 + 市场资金流向（Railway 免费版优化版本）",
     version="6.0"
 )
 
@@ -135,3 +135,4 @@ async def get_market_flow(
         if 'df' in locals():
             print(f"[DEBUG_COLUMNS] {list(df.columns)}")
         raise HTTPException(status_code=500, detail="市场资金查询失败，请稍后再试")
+
