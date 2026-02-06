@@ -7,7 +7,7 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import JSONResponse
 import akshare as ak
 
-app = FastAPI(title="金融数据 API", version="8.0")
+app = FastAPI(title="金融数据服务", description="基金净值 + 市场资金流向", version="9.0")
 
 def safe_float(val, default=None):
     if val is None or str(val).lower() in ["-", "", "none", "null", "nan"]:
@@ -35,11 +35,11 @@ async def health():
     return {"status": "ok", "timestamp": int(time.time())}
 
 # ======================
-# 基金详情（使用天天基金官方 API）
+# 基金详情（天天基金官方 API）
 # ======================
 @app.get("/fund/single")
 async def get_fund(
-    fund_code: str = Query(..., regex=r"^\d{6}$", description="6位有效基金代码"),
+    fund_code: str = Query(..., regex=r"^\d{6}$", description="6位基金代码"),
     api_key: str = Query(..., description="API密钥")
 ):
     expected_key = os.getenv("FUND_API_KEY", "test")
@@ -58,12 +58,10 @@ async def get_fund(
         if not text.startswith('jsonpgz') or '(' not in text or ')' not in text:
             raise HTTPException(status_code=500, detail="基金数据格式异常")
             
-        # 提取 JSON 部分
         start = text.find('(') + 1
         end = text.rfind(')')
         data = json.loads(text[start:end])
         
-        # ✅ 关键修复：用基金名称判断是否有效，而非 code 字段
         fund_name = safe_str(data.get("name"))
         if not fund_name:
             raise HTTPException(status_code=404, detail="基金不存在或已清盘")
@@ -71,11 +69,11 @@ async def get_fund(
         return JSONResponse({
             "code": 200,
             "data": {
-                "fund_code": fund_code,  # 使用用户输入的代码
+                "fund_code": fund_code,
                 "fund_name": fund_name,
                 "unit_nav": safe_float(data.get("dwjz")),      # 单位净值（T-1）
-                "estimate_nav": safe_float(data.get("gsz")),   # 实时估算净值
-                "estimate_growth": safe_float(data.get("gszzl")),  # 估算涨幅（%）
+                "estimate_nav": safe_float(data.get("gsz")),   # 实时估算
+                "estimate_growth": safe_float(data.get("gszzl")),  # 估算涨幅%
                 "date": safe_str(data.get("gztime"))[:10] if data.get("gztime") else ""
             }
         })
@@ -84,10 +82,10 @@ async def get_fund(
         raise
     except Exception as e:
         print(f"[FUND_ERROR] {str(e)} | Code: {fund_code}")
-        raise HTTPException(status_code=500, detail="基金查询失败，请稍后再试")
+        raise HTTPException(status_code=500, detail="基金查询失败")
 
 # ======================
-# 市场资金流向（主力/散户）
+# 市场资金动向（主力/散户）
 # ======================
 @app.get("/market/flow")
 async def get_market_flow(
@@ -104,12 +102,12 @@ async def get_market_flow(
             raise HTTPException(status_code=500, detail="资金流数据为空")
 
         name_map = {"sh": "沪市", "sz": "深市", "all": "沪深两市"}
-        target_name = name_map[market]
+        target = name_map[market]
 
-        # 尝试精确匹配
-        row = df[df['板块'] == target_name]
+        # 精确匹配
+        row = df[df['板块'] == target]
         if row.empty:
-            # 模糊匹配（兼容不同 AKShare 版本）
+            # 模糊匹配（兼容不同版本字段）
             mask = df['板块'].astype(str).str.contains(
                 "沪" if market == "sh" else "深" if market == "sz" else "两|沪深",
                 na=False
@@ -123,7 +121,7 @@ async def get_market_flow(
         return JSONResponse({
             "code": 200,
             "data": {
-                "market": safe_str(d.get("板块", target_name)),
+                "market": safe_str(d.get("板块", target)),
                 "main_net_inflow": safe_float(d.get("主力净流入-净额")),      # 亿元
                 "retail_net_inflow": safe_float(d.get("散户净流入-净额")),     # 亿元
                 "main_net_ratio": safe_float(d.get("主力净流入-净占比")),     # %
@@ -138,4 +136,4 @@ async def get_market_flow(
         print(f"[MARKET_ERROR] {err_msg}")
         if 'df' in locals():
             print(f"[COLUMNS] {list(df.columns)}")
-        raise HTTPException(status_code=500, detail="市场资金查询失败，请稍后再试")
+        raise HTTPException(status_code=500, detail="市场资金查询失败")
