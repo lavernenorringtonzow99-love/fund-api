@@ -1,0 +1,5 @@
+[build]
+builder = "heroku"
+
+[variables]
+APT_PACKAGES = "libxml2-dev libxslt-dev libffi-dev gcc musl-dev libssl-dev"
