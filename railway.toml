@@ -1,6 +1,8 @@
 [build]
 builder = "heroku"
-args = ["DOCKER_BUILDKIT=0"]
 
 [variables]
+# 安装系统依赖（用于 lxml 编译）
 APT_PACKAGES = "libxml2-dev libxslt-dev libffi-dev gcc musl-dev libssl-dev"
+# 禁用 BuildKit（解决 mergeop 错误）
+DOCKER_BUILDKIT = "0"
