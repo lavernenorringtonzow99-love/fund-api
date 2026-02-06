@@ -1,21 +1,16 @@
 import os
+import json
 import time
+import httpx
 import pandas as pd
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import JSONResponse
 import akshare as ak
 
-app = FastAPI(
-    title="金融数据服务",
-    description="基金净值 + 市场资金流向（Railway 免费版优化版本）",
-    version="6.0"
-)
+app = FastAPI(title="金融数据服务", version="7.0")
 
-# ======================
-# 辅助函数
-# ======================
 def safe_float(val, default=None):
-    if val is None or val in ["-", "", "None"] or pd.isna(val):
+    if val is None or val in ["-", "", "None"]:
         return default
     try:
         s = str(val).strip()
@@ -33,93 +28,100 @@ def safe_str(val, default=""):
     return str(val).strip()
 
 # ======================
-# 健康检查（用于验证服务是否启动）
+# 健康检查
 # ======================
 @app.get("/health")
-async def health_check():
-    return {"status": "ok", "timestamp": int(time.time())}
+async def health():
+    return {"status": "ok", "time": int(time.time())}
 
 # ======================
-# 基金详情接口
+# 基金详情（使用天天基金官方 API）
 # ======================
 @app.get("/fund/single")
-async def get_fund_info(
-    fund_code: str = Query(..., regex=r"^\d{6}$", description="6位基金代码"),
-    api_key: str = Query(..., description="API密钥")
+async def get_fund(
+    fund_code: str = Query(..., regex=r"^\d{6}$"),
+    api_key: str = Query(...)
 ):
     expected_key = os.getenv("FUND_API_KEY", "test")
     if api_key != expected_key:
         raise HTTPException(status_code=403, detail="Invalid API Key")
 
     try:
-        # 仅请求单位净值走势（最小数据量，避免内存溢出）
-        df = ak.fund_em_open_fund_info(fund=fund_code, indicator="单位净值走势")
+        url = f"http://fundgz.1234567.com.cn/js/{fund_code}.js"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url)
         
-        if df.empty or len(df) == 0:
-            raise HTTPException(status_code=404, detail="基金无数据")
-
-        # 最新净值通常在最后一行
-        latest = df.iloc[-1]
-        unit_nav = safe_str(latest.get("单位净值"))
-        if not unit_nav or unit_nav == "-":
-            raise HTTPException(status_code=404, detail="净值暂不可用")
-
+        if response.status_code != 200:
+            raise HTTPException(status_code=404, detail="基金接口无响应")
+            
+        text = response.text
+        if not text.startswith('jsonpgz') or '(' not in text:
+            raise HTTPException(status_code=500, detail="基金数据格式异常")
+            
+        start = text.find('(') + 1
+        end = text.rfind(')')
+        data = json.loads(text[start:end])
+        
+        if data.get("code") != fund_code:
+            raise HTTPException(status_code=404, detail="基金代码无效")
+            
         return JSONResponse({
             "code": 200,
             "data": {
-                "fund_code": fund_code,
-                "unit_nav": safe_float(unit_nav),
-                "date": safe_str(latest.get("净值日期")),
-                "daily_return_pct": safe_float(latest.get("日增长率"))
+                "fund_code": data["code"],
+                "fund_name": data["name"],
+                "unit_nav": safe_float(data.get("dwjz")),      # 单位净值（T-1）
+                "estimate_nav": safe_float(data.get("gsz")),   # 估算净值（实时）
+                "estimate_growth": safe_float(data.get("gszzl")),  # 估算涨幅%
+                "date": data.get("gztime", "")[:10]
             }
         })
-
+        
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[FUND_ERROR] {str(e)[:200]}")
-        raise HTTPException(status_code=500, detail="基金查询失败，请稍后再试")
+        print(f"[FUND_ERROR] {str(e)} | Code: {fund_code}")
+        raise HTTPException(status_code=500, detail="基金查询失败")
 
 # ======================
-# 市场资金流向接口
+# 市场资金流向（AKShare + 容错）
 # ======================
 @app.get("/market/flow")
 async def get_market_flow(
-    market: str = Query("all", enum=["sh", "sz", "all"], description="市场类型"),
-    api_key: str = Query(..., description="API密钥")
+    market: str = Query("all", enum=["sh", "sz", "all"]),
+    api_key: str = Query(...)
 ):
     expected_key = os.getenv("FUND_API_KEY", "test")
     if api_key != expected_key:
         raise HTTPException(status_code=403, detail="Invalid API Key")
 
     try:
+        # 尝试获取资金流数据
         df = ak.stock_market_fund_flow()
         if df.empty:
-            raise HTTPException(status_code=500, detail="资金流数据源返回空")
+            raise HTTPException(status_code=500, detail="资金流数据为空")
 
-        # 映射市场名称
         name_map = {"sh": "沪市", "sz": "深市", "all": "沪深两市"}
-        target_name = name_map[market]
+        target = name_map[market]
 
-        # 精确匹配
-        row = df[df['板块'] == target_name]
+        # 先精确匹配
+        row = df[df['板块'] == target]
         if row.empty:
-            # 尝试模糊匹配（兼容不同 AKShare 版本）
+            # 再模糊匹配（兼容不同版本字段）
             mask = df['板块'].astype(str).str.contains(
                 "沪" if market == "sh" else "深" if market == "sz" else "两|沪深",
                 na=False
             )
             candidates = df[mask]
-            if not candidates.empty:
-                row = candidates.head(1)
-            else:
-                raise HTTPException(status_code=404, detail="未找到对应市场数据")
+            if candidates.empty:
+                raise HTTPException(status_code=404, detail="未找到市场数据")
+            row = candidates.head(1)
 
         d = row.iloc[0]
         return JSONResponse({
             "code": 200,
             "data": {
-                "market": safe_str(d.get("板块", target_name)),
+                "market": safe_str(d.get("板块", target)),
                 "main_net_inflow": safe_float(d.get("主力净流入-净额")),      # 亿元
                 "retail_net_inflow": safe_float(d.get("散户净流入-净额")),     # 亿元
                 "main_net_ratio": safe_float(d.get("主力净流入-净占比")),     # %
@@ -130,9 +132,13 @@ async def get_market_flow(
     except HTTPException:
         raise
     except Exception as e:
-        err_msg = str(e)[:200]
-        print(f"[MARKET_ERROR] {err_msg}")
+        err = str(e)[:200]
+        print(f"[MARKET_ERROR] {err}")
         if 'df' in locals():
-            print(f"[DEBUG_COLUMNS] {list(df.columns)}")
-        raise HTTPException(status_code=500, detail="市场资金查询失败，请稍后再试")
+            print(f"[COLUMNS] {list(df.columns)}")
+        raise HTTPException(status_code=500, detail="资金流查询失败")
 
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port, workers=1)
