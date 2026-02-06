@@ -1,5 +1,6 @@
 [build]
 builder = "heroku"
+args = ["DOCKER_BUILDKIT=0"]
 
 [variables]
 APT_PACKAGES = "libxml2-dev libxslt-dev libffi-dev gcc musl-dev libssl-dev"
