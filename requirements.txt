@@ -1,7 +1,8 @@
 fastapi==0.110.0
 uvicorn==0.27.1
-akshare==1.15.47
-pandas==2.1.4
+akshare>=1.16.0,<2.0.0
+pandas==2.2.2
+
 
 
 
