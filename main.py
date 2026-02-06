@@ -179,9 +179,21 @@ async def get_market_fund_flow(
             print(f"[DEBUG] Data: {df.head().to_dict()}")
         raise HTTPException(status_code=500, detail="市场资金数据获取失败")
 
-
+# ===== 新增：环境变量调试接口 =====
+@app.get("/debug/env")
+async def debug_environment():
+    """
+    返回关键环境变量的值（仅用于调试）
+    """
+    return {
+        "FUND_API_KEY": os.getenv("FUND_API_KEY", "NOT_SET"),
+        "PORT": os.getenv("PORT", "NOT_SET"),
+        "status": "Environment variables loaded successfully"
+    }
+    
 # 启动配置
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
